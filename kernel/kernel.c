@@ -6,6 +6,7 @@ KpOS Kernel v0.0.2
 #include "pic.h"
 #include "pmm.h"
 #include "acpi.h"
+#include "heap.h"
 #include "shell.h"
 #include "memmap.h"
 
@@ -15,6 +16,9 @@ void kernel_main(unsigned int magic, unsigned int mbi_addr)
     memmap_init(mbi_addr);
     pmm_init(mbi_addr);
     pmm_selftest();
+
+    heap_init();
+    heap_selftest();
 
     if (magic != 0x36D76289) {
         vga_print("KpOS: Invalid boot magic.\n");
