@@ -1,4 +1,3 @@
-
 CC = gcc
 AS = nasm
 LD = ld
@@ -18,6 +17,8 @@ CFLAGS = -m32 \
          -Wall -Wextra \
          -O2
 
+OBJS = build/boot.o build/kernel.o build/vga.o build/pic.o build/idt.o build/irq.o build/interrupts.o build/keyboard.o build/shell.o
+
 .PHONY: all iso run clean
 
 all: iso
@@ -33,8 +34,6 @@ build/%.o: kernel/%.c | build
 
 build/%.o: kernel/%.asm | build
 	$(AS) -f elf32 $< -o $@
-
-OBJS = build/boot.o build/kernel.o build/vga.o build/pic.o build/idt.o build/irq.o build/interrupts.o
 
 build/kernel.elf: $(OBJS) linker.ld
 	$(LD) -m elf_i386 \
@@ -54,9 +53,7 @@ iso: build/kernel.elf
 run: iso
 	qemu-system-x86_64 \
 	    -cdrom build/kpos.iso \
-	    -m 128M \
-		-no-reboot \
-		-d int,cpu_reset
+	    -m 128M
 
 clean:
 	rm -rf build/*

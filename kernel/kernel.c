@@ -4,6 +4,7 @@ KpOS Kernel v0.0.2
 #include "vga.h"
 #include "idt.h"
 #include "pic.h"
+#include "shell.h"
 
 void kernel_main(unsigned int magic, unsigned int mbi_addr)
 {
@@ -24,7 +25,7 @@ void kernel_main(unsigned int magic, unsigned int mbi_addr)
     pic_init();
     __asm__ volatile ("sti");   /* turn interrupts on */
 
-    vga_print("Interrupts enabled. Press a key.\n");
+    shell_init();
 
     for (;;)
         __asm__ volatile ("hlt");
