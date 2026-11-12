@@ -28,17 +28,22 @@ build:
 build/boot.o: boot/boot.asm | build
 	$(AS) -f elf32 $< -o $@
 
-build/kernel.o: kernel/kernel.c | build
+build/%.o: kernel/%.c | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
-build/kernel.elf: build/boot.o build/kernel.o linker.ld
+build/%.o: kernel/%.asm | build
+	$(AS) -f elf32 $< -o $@
+
+OBJS = build/boot.o build/kernel.o build/vga.o build/pic.o build/idt.o build/irq.o build/interrupts.o
+
+build/kernel.elf: $(OBJS) linker.ld
 	$(LD) -m elf_i386 \
 	    -T linker.ld \
 	    -nostdlib \
 	    -z max-page-size=0x1000 \
 	    -z noexecstack \
 	    -o $@ \
-	    build/boot.o build/kernel.o
+	    $(OBJS)
 
 iso: build/kernel.elf
 	mkdir -p build/isodir/boot/grub
@@ -49,7 +54,9 @@ iso: build/kernel.elf
 run: iso
 	qemu-system-x86_64 \
 	    -cdrom build/kpos.iso \
-	    -m 128M
+	    -m 128M \
+		-no-reboot \
+		-d int,cpu_reset
 
 clean:
 	rm -rf build/*
