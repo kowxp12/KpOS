@@ -15,9 +15,18 @@ CFLAGS = -m32 \
          -mno-mmx \
          -mno-80387 \
          -Wall -Wextra \
-         -O2
+         -O2 \
+         -Ikernel/cpu \
+         -Ikernel/drivers \
+         -Ikernel/shell
 
-OBJS = build/boot.o build/kernel.o build/vga.o build/pic.o build/idt.o build/irq.o build/interrupts.o build/keyboard.o build/shell.o
+# Folders where make looks for source files
+vpath %.c   kernel kernel/cpu kernel/drivers kernel/shell
+vpath %.asm kernel/cpu
+
+OBJS = build/boot.o build/kernel.o \
+       build/vga.o build/keyboard.o build/shell.o \
+       build/idt.o build/pic.o build/irq.o build/interrupts.o
 
 .PHONY: all iso run clean
 
@@ -29,10 +38,10 @@ build:
 build/boot.o: boot/boot.asm | build
 	$(AS) -f elf32 $< -o $@
 
-build/%.o: kernel/%.c | build
+build/%.o: %.c | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
-build/%.o: kernel/%.asm | build
+build/%.o: %.asm | build
 	$(AS) -f elf32 $< -o $@
 
 build/kernel.elf: $(OBJS) linker.ld
