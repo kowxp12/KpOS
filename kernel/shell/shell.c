@@ -1,4 +1,5 @@
 #include "shell.h"
+#include "acpi.h"
 #include "vga.h"
 #include "io.h"
 
@@ -50,12 +51,13 @@ static void shutdown(void)
 {
     vga_print("Shutting down...\n");
 
-    /* Power-off ports used by QEMU. They do nothing on real hardware. */
-    outw(0x604, 0x2000);    /* QEMU q35 machine */
-    outw(0xB004, 0x2000);   /* QEMU older machine types */
+    acpi_poweroff();
 
-    /* If QEMU didn't power off, stop here */
-    vga_print("QEMU did not power off. You can close the window.\n");
+    /* Fallback for QEMU if ACPI didn't work */
+    outw(0x604, 0x2000);
+    outw(0xB004, 0x2000);
+
+    vga_print("Power-off failed.\n");
     for (;;)
         __asm__ volatile ("cli; hlt");
 }

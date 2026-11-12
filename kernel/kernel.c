@@ -4,6 +4,7 @@ KpOS Kernel v0.0.2
 #include "vga.h"
 #include "idt.h"
 #include "pic.h"
+#include "acpi.h"
 #include "shell.h"
 
 void kernel_main(unsigned int magic, unsigned int mbi_addr)
@@ -23,6 +24,7 @@ void kernel_main(unsigned int magic, unsigned int mbi_addr)
 
     idt_init();
     pic_init();
+    acpi_init();
     __asm__ volatile ("sti");   /* turn interrupts on */
 
     shell_init();
