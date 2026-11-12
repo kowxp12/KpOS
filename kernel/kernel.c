@@ -26,13 +26,12 @@ void kernel_main(unsigned int magic, unsigned int mbi_addr)
             __asm__ volatile ("hlt");
     }
 
-    vga_print("KpOS Kernel\n");
-    vga_print("System initialized.\n");
-
     idt_init();
     pic_init();
     acpi_init();
     __asm__ volatile ("sti");   /* turn interrupts on */
+
+    vga_clear();
 
     shell_init();
 

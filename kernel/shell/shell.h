@@ -2,6 +2,6 @@
 #define SHELL_H
 
 void shell_init(void);
-void shell_input(char c);
+void shell_input(int key);
 
 #endif

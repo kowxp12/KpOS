@@ -100,3 +100,13 @@ void heap_selftest(void)
     kfree(b);
     kfree(c);
 }
+
+unsigned int heap_free_bytes(void)
+{
+    unsigned int total = 0;
+
+    for (struct block *b = head; b; b = b->next)
+        if (b->free)
+            total += b->size;
+    return total;
+}
