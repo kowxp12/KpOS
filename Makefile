@@ -15,21 +15,23 @@ CFLAGS = -m32 \
          -mno-mmx \
          -mno-80387 \
          -Wall -Wextra \
+         -fno-tree-loop-distribute-patterns\
          -O2 \
          -Ikernel/cpu \
          -Ikernel/drivers \
          -Ikernel/shell \
 		 -Ikernel/acpi \
 		 -Ikernel/mm \
-		 -Ikernel/fs
+		 -Ikernel/fs \
+		 -Ikernel/lib
 
 # Folders where make looks for source files
-vpath %.c   kernel kernel/cpu kernel/drivers kernel/shell kernel/acpi kernel/mm kernel/fs
+vpath %.c   kernel kernel/cpu kernel/drivers kernel/shell kernel/acpi kernel/mm kernel/fs kernel/lib
 vpath %.asm kernel/cpu
 
 OBJS = build/boot.o build/kernel.o \
        build/vga.o build/keyboard.o build/shell.o build/acpi.o build/memmap.o build/pmm.o build/heap.o build/random.o build/ata.o \
-       build/block.o build/kpfs.o \
+       build/block.o build/kpfs.o build/mem.o \
        build/idt.o build/pic.o build/irq.o build/interrupts.o
 
 .PHONY: all iso run clean

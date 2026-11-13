@@ -318,6 +318,9 @@ static void cmd_ls(int argc, char **argv);
 static void cmd_write(int argc, char **argv);
 static void cmd_cat(int argc, char **argv);
 static void cmd_rm(int argc, char **argv);
+static void cmd_mkdir(int argc, char **argv);
+static void cmd_cd(int argc, char **argv);
+static void cmd_pwd(int argc, char **argv);
 
 /* Add a new command by adding one line here */
 static const struct command commands[] = {
@@ -353,6 +356,9 @@ static const struct command commands[] = {
     { "write",       "save a file: write <name> <text>",  cmd_write,             0 },
     { "cat",         "show a file: cat <name>",           cmd_cat,               0 },
     { "rm",          "delete a file: rm <name>",          cmd_rm,                0 },
+    { "mkdir",       "make a folder: mkdir <name>",       cmd_mkdir,             0 },
+    { "cd",          "change folder: cd <name>, cd .., cd /", cmd_cd,            0 },
+    { "pwd",         "show the current folder",           cmd_pwd,               0 },
 };
 
 #define NUM_COMMANDS (sizeof(commands) / sizeof(commands[0]))
@@ -918,7 +924,7 @@ static void cmd_disks(int argc, char **argv)
     vga_print(" MB\n");
 
     vga_print("Filesystem: ");
-    vga_print(kpfs_probe() ? "KPFS v1 (formatted)\n" : "not formatted\n");
+    vga_print(kpfs_probe() ? "KPFS v2 (formatted)\n" : "not formatted\n");
 }
 
 static void cmd_diskread(int argc, char **argv)
@@ -1030,6 +1036,28 @@ static void cmd_rm(int argc, char **argv)
         return;
     }
     kpfs_remove(argv[1]);
+}
+
+static void cmd_mkdir(int argc, char **argv)
+{
+    if (argc < 2) {
+        vga_lprint("Usage: mkdir <name>\n");
+        return;
+    }
+    kpfs_mkdir(argv[1]);
+}
+
+static void cmd_cd(int argc, char **argv)
+{
+    /* With no name, cd goes to the root folder */
+    kpfs_cd(argc < 2 ? "/" : argv[1]);
+}
+
+static void cmd_pwd(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    kpfs_pwd();
 }
 
 /* ---- Shell input and startup ---- */
