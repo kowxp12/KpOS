@@ -8,12 +8,12 @@
 #define ET_DIVISOR       256    /* one entry-table sector per 256 disk sectors */
 #define ET_MIN           1
 #define ET_MAX           64
-#define DIR_DIVISOR      128    /* one directory sector per 128 disk sectors */
+#define DIR_DIVISOR      128    /* one folder sector per 128 disk sectors */
 #define DIR_MIN          4
 #define DIR_MAX          256
 #define ENTRY_SIZE       64
 #define ENTRIES_PER_SEC  (KPFS_SECTOR / ENTRY_SIZE)
-#define CHILDREN_MAX     (KPFS_SECTOR / 4)   /* 128 child IDs per directory */
+#define CHILDREN_MAX     (KPFS_SECTOR / 4)   /* 128 child IDs per folder */
 #define NAME_MAX_LEN     15
 #define ROOT_ID          0u
 
@@ -23,7 +23,7 @@
 
 /* Superblock, section 5 of the v2 spec. Exactly one sector. */
 struct kpfs_super {
-    char     magic[4];          /* "KPFS" */
+    char     magic[4];
     uint32_t version;
     uint32_t sector_size;
     uint64_t total_sectors;
@@ -36,21 +36,21 @@ struct kpfs_super {
     uint64_t dir_size;
     uint64_t file_start;
     uint64_t fs_id;
-    uint32_t next_id;           /* next ID to hand out */
-    uint32_t dir_next;          /* directory sectors already in use */
+    uint32_t next_id;
+    uint32_t dir_next;
     uint8_t  reserved[KPFS_SECTOR - 100];
 } __attribute__((packed));
 _Static_assert(sizeof(struct kpfs_super) == KPFS_SECTOR, "superblock must be one sector");
 
-/* Entry table record: one per file or directory, 8 per sector */
+/* Entry table record: one per file or folder, 8 per sector */
 struct kpfs_entry {
     char     name[16];
     uint32_t id;
     uint32_t parent;
-    uint8_t  type;              /* TYPE_FREE, TYPE_FILE, or TYPE_DIR */
-    uint64_t start;             /* directory: sector of its child list */
-    uint64_t size;              /* file: size in bytes (stage 2) */
-    uint64_t alloc;             /* file: sectors used (stage 2) */
+    uint8_t  type;
+    uint64_t start;     /* folder: sector of its child list; file: first data sector */
+    uint64_t size;      /* file: size in bytes */
+    uint64_t alloc;     /* file: sectors used */
     uint8_t  pad[ENTRY_SIZE - 49];
 } __attribute__((packed));
 _Static_assert(sizeof(struct kpfs_entry) == ENTRY_SIZE, "entry must be 64 bytes");
@@ -104,6 +104,13 @@ static int name_eq(const char *stored, const char *name)
             return 1;
     }
     return 0;
+}
+
+static void set_name(struct kpfs_entry *e, const char *name)
+{
+    zero_bytes(e->name, sizeof(e->name));
+    for (unsigned int i = 0; i < NAME_MAX_LEN && name[i]; i++)
+        e->name[i] = name[i];
 }
 
 static uint64_t clamp64(uint64_t v, uint64_t lo, uint64_t hi)
@@ -161,7 +168,6 @@ static int write_super(void)
     return block_write(0, sec);
 }
 
-/* Load the superblock for a command, printing a hint if the disk isn't usable */
 static int need_fs(void)
 {
     int r = load_super();
@@ -198,20 +204,27 @@ static int entry_put(uint32_t i, const struct kpfs_entry *e)
     return block_write(s, sec);
 }
 
-/* Find a used entry by its ID */
-static int find_by_id(uint32_t id, struct kpfs_entry *out)
+/* Find a used entry by ID. idx may be NULL. */
+static int find_at(uint32_t id, struct kpfs_entry *out, uint32_t *idx)
 {
     uint32_t n = et_count();
     for (uint32_t i = 0; i < n; i++) {
         if (entry_get(i, out) != 0)
             return -1;
-        if (out->type != TYPE_FREE && out->id == id)
+        if (out->type != TYPE_FREE && out->id == id) {
+            if (idx)
+                *idx = i;
             return 0;
+        }
     }
     return -1;
 }
 
-/* Find the first unused entry slot */
+static int find_by_id(uint32_t id, struct kpfs_entry *out)
+{
+    return find_at(id, out, 0);
+}
+
 static int find_free_slot(uint32_t *out)
 {
     uint32_t n = et_count();
@@ -227,16 +240,95 @@ static int find_free_slot(uint32_t *out)
     return -1;
 }
 
-/* ---- Directory child lists ---- */
+/* ---- Folder child lists ---- */
 
-static int read_children(const struct kpfs_entry *dir)
+/* Load a folder's entry and its child list into kids[] */
+static int load_dir(uint32_t id, struct kpfs_entry *dir)
 {
-    return block_read(dir->start, kids);
+    if (find_by_id(id, dir) != 0 || dir->type != TYPE_DIR)
+        return -1;
+    return block_read(dir->start, kids) == 0 ? 0 : -1;
 }
 
-static int write_children(const struct kpfs_entry *dir)
+static unsigned int count_kids(void)
 {
-    return block_write(dir->start, kids);
+    unsigned int n = 0;
+    while (n < CHILDREN_MAX && kids[n])
+        n++;
+    return n;
+}
+
+/* Find a direct child by name in a folder. kid_pos may be NULL. */
+static int child_lookup(uint32_t dir_id, const char *name,
+                        struct kpfs_entry *out, unsigned int *kid_pos)
+{
+    struct kpfs_entry dir;
+    if (load_dir(dir_id, &dir) != 0)
+        return -1;
+
+    for (unsigned int n = 0; n < CHILDREN_MAX && kids[n]; n++) {
+        struct kpfs_entry e;
+        if (find_by_id(kids[n], &e) == 0 && name_eq(e.name, name)) {
+            copy_bytes(out, &e, sizeof(e));
+            if (kid_pos)
+                *kid_pos = n;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+/* Add an ID to a folder's child list (the commit step for new items) */
+static int link_child(uint32_t dir_id, uint32_t id)
+{
+    struct kpfs_entry dir;
+    if (load_dir(dir_id, &dir) != 0)
+        return -1;
+
+    unsigned int c = count_kids();
+    if (c >= CHILDREN_MAX)
+        return -1;
+
+    kids[c] = id;
+    return block_write(dir.start, kids);
+}
+
+/* Remove an ID from a folder's child list, closing the gap */
+static int unlink_child(uint32_t dir_id, uint32_t id)
+{
+    struct kpfs_entry dir;
+    if (load_dir(dir_id, &dir) != 0)
+        return -1;
+
+    unsigned int c = count_kids();
+    for (unsigned int i = 0; i < c; i++) {
+        if (kids[i] == id) {
+            for (unsigned int j = i; j + 1 < c; j++)
+                kids[j] = kids[j + 1];
+            kids[c - 1] = 0;
+            return block_write(dir.start, kids);
+        }
+    }
+    return -1;
+}
+
+/* True if target is id itself or lies below it in the folder tree */
+static int is_inside(uint32_t target, uint32_t id)
+{
+    uint32_t cur = target;
+
+    for (uint32_t guard = 0; guard < et_count(); guard++) {
+        if (cur == id)
+            return 1;
+        if (cur == ROOT_ID)
+            return 0;
+
+        struct kpfs_entry e;
+        if (find_by_id(cur, &e) != 0)
+            return 0;
+        cur = e.parent;
+    }
+    return 0;
 }
 
 /* Print a folder path from the root down, like /docs/notes */
@@ -252,6 +344,98 @@ static void print_path(uint32_t id)
     print_path(e.parent);
     vga_putchar('/');
     vga_print(e.name);
+}
+
+/* ---- File data space ---- */
+
+/* First free run of 'need' sectors in the File Data region. Every file's
+   sectors count as occupied, including a file that is being replaced. */
+static int find_run(uint64_t need, uint64_t *start_out)
+{
+    uint64_t s = sb.file_start;
+    uint32_t n = et_count();
+
+    for (;;) {
+        if (s + need > sb.total_sectors)
+            return -1;
+
+        int bumped = 0;
+        for (uint32_t i = 0; i < n && !bumped; i++) {
+            struct kpfs_entry e;
+            if (entry_get(i, &e) != 0)
+                return -1;
+            if (e.type != TYPE_FILE || e.alloc == 0)
+                continue;
+
+            uint64_t end = e.start + e.alloc;
+            if (s < end && e.start < s + need) {
+                s = end;
+                bumped = 1;
+            }
+        }
+        if (!bumped) {
+            *start_out = s;
+            return 0;
+        }
+    }
+}
+
+/* Returns 1 if a live folder already uses this sector */
+static int dir_sector_in_use(uint64_t sector)
+{
+    uint32_t n = et_count();
+    for (uint32_t i = 0; i < n; i++) {
+        struct kpfs_entry e;
+        if (entry_get(i, &e) != 0)
+            return 1;               /* be safe: treat unreadable as used */
+        if (e.type == TYPE_DIR && e.start == sector)
+            return 1;
+    }
+    return 0;
+}
+
+/* First folder-data sector that no live folder uses */
+static int find_free_dir_sector(uint64_t *out)
+{
+    for (uint64_t k = 0; k < sb.dir_size; k++) {
+        uint64_t s = sb.dir_start + k;
+        if (!dir_sector_in_use(s)) {
+            *out = s;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+/* Free an entry and, for folders, everything inside it.
+   The caller has already removed the item from its parent. */
+static int delete_tree(uint32_t id)
+{
+    struct kpfs_entry e;
+    uint32_t slot;
+    if (find_at(id, &e, &slot) != 0)
+        return -1;
+
+    if (e.type == TYPE_DIR) {
+        /* Copy the child list first, because recursion reuses kids[] */
+        uint32_t list[CHILDREN_MAX];
+        if (block_read(e.start, kids) != 0)
+            return -1;
+        copy_bytes(list, kids, sizeof(list));
+
+        for (unsigned int n = 0; n < CHILDREN_MAX && list[n]; n++)
+            if (delete_tree(list[n]) != 0)
+                return -1;
+
+        /* Clear the folder's child-list sector so the space is clean */
+        zero_bytes(sec, KPFS_SECTOR);
+        if (block_write(e.start, sec) != 0)
+            return -1;
+    }
+
+    struct kpfs_entry blank;
+    zero_bytes(&blank, sizeof(blank));
+    return entry_put(slot, &blank);
 }
 
 /* ---- Format ---- */
@@ -281,7 +465,6 @@ int kpfs_format(void)
         return -1;
     }
 
-    /* Build the new superblock in memory first */
     struct kpfs_super nsb;
     zero_bytes(&nsb, sizeof(nsb));
     nsb.magic[0] = 'K';
@@ -303,18 +486,17 @@ int kpfs_format(void)
     uint32_t hi = random_next();
     uint32_t lo = random_next();
     nsb.fs_id = ((uint64_t)hi << 32) | lo;
+    nsb.next_id = 1;
+    nsb.dir_next = 1;
 
-    nsb.next_id = 1;    /* ID 0 belongs to the root */
-    nsb.dir_next = 1;   /* directory sector 0 belongs to the root */
-
-    /* Step 1: invalidate the old superblock so a half-done format can't look valid */
+    /* Step 1: invalidate the old superblock */
     zero_bytes(sec, KPFS_SECTOR);
     if (block_write(0, sec) != 0) {
         vga_eprint("Failed to invalidate the old superblock.\n");
         return -1;
     }
 
-    /* Step 2: erase every other sector, so old file contents are gone */
+    /* Step 2: erase every other sector */
     vga_print("Erasing disk");
     for (uint64_t s = 1; s < total; s++) {
         if (block_write(s, sec) != 0) {
@@ -326,8 +508,8 @@ int kpfs_format(void)
     }
     vga_putchar('\n');
 
-    /* Step 3: write the root directory's entry */
-    sb = nsb;
+    /* Step 3: root folder entry */
+    copy_bytes(&sb, &nsb, sizeof(sb));
     struct kpfs_entry root;
     zero_bytes(&root, sizeof(root));
     root.id = ROOT_ID;
@@ -336,11 +518,11 @@ int kpfs_format(void)
     root.start = dir_start;
 
     if (entry_put(0, &root) != 0) {
-        vga_eprint("Failed to write the root directory.\n");
+        vga_eprint("Failed to write the root folder.\n");
         return -1;
     }
 
-    /* Step 4: superblock last. Until this succeeds, the disk is not formatted. */
+    /* Step 4: superblock last */
     if (write_super() != 0) {
         vga_eprint("Failed to write the superblock.\n");
         return -1;
@@ -382,12 +564,8 @@ int kpfs_list(void)
         return -1;
 
     struct kpfs_entry dir;
-    if (find_by_id(cur_dir, &dir) != 0) {
+    if (load_dir(cur_dir, &dir) != 0) {
         vga_eprint("Current folder is missing.\n");
-        return -1;
-    }
-    if (read_children(&dir) != 0) {
-        vga_eprint("Read failed.\n");
         return -1;
     }
 
@@ -401,6 +579,11 @@ int kpfs_list(void)
         vga_print(e.name);
         if (e.type == TYPE_DIR)
             vga_putchar('/');
+        else {
+            vga_print("  ");
+            vga_print_u64(e.size);
+            vga_print(" bytes");
+        }
         vga_putchar('\n');
         count++;
     }
@@ -420,33 +603,19 @@ int kpfs_mkdir(const char *name)
         return -1;
     }
 
+    struct kpfs_entry dup;
+    if (child_lookup(cur_dir, name, &dup, 0) == 0) {
+        vga_wprint("A file or folder with that name already exists here.\n");
+        return -1;
+    }
+
     struct kpfs_entry parent;
-    if (find_by_id(cur_dir, &parent) != 0 || parent.type != TYPE_DIR) {
+    if (load_dir(cur_dir, &parent) != 0) {
         vga_eprint("Current folder is missing.\n");
         return -1;
     }
-    if (read_children(&parent) != 0) {
-        vga_eprint("Read failed.\n");
-        return -1;
-    }
-
-    /* Check for a free child slot and for a duplicate name */
-    unsigned int n = 0;
-    while (n < CHILDREN_MAX && kids[n]) {
-        struct kpfs_entry e;
-        if (find_by_id(kids[n], &e) == 0 && name_eq(e.name, name)) {
-            vga_wprint("A file or folder with that name already exists here.\n");
-            return -1;
-        }
-        n++;
-    }
-    if (n == CHILDREN_MAX) {
+    if (count_kids() >= CHILDREN_MAX) {
         vga_wprint("This folder is full.\n");
-        return -1;
-    }
-
-    if (sb.dir_next >= sb.dir_size) {
-        vga_wprint("No room for more folders on this disk.\n");
         return -1;
     }
 
@@ -456,21 +625,25 @@ int kpfs_mkdir(const char *name)
         return -1;
     }
 
-    uint32_t new_id = sb.next_id;
-    uint64_t dir_sector = sb.dir_start + sb.dir_next;
+    uint64_t dir_sector;
+    if (find_free_dir_sector(&dir_sector) != 0) {
+        vga_wprint("No room for more folders on this disk.\n");
+        return -1;
+    }
 
-    /* Step 1: empty child list for the new folder (the scratch list is reloaded below) */
+    uint32_t new_id = sb.next_id;
+
+    /* Step 1: empty child list for the new folder */
     zero_bytes(kids, sizeof(kids));
     if (block_write(dir_sector, kids) != 0) {
         vga_eprint("Write failed. Nothing was changed.\n");
         return -1;
     }
 
-    /* Step 2: entry for the new folder */
+    /* Step 2: the new folder's entry */
     struct kpfs_entry ne;
     zero_bytes(&ne, sizeof(ne));
-    for (unsigned int i = 0; i < NAME_MAX_LEN && name[i]; i++)
-        ne.name[i] = name[i];
+    set_name(&ne, name);
     ne.id = new_id;
     ne.parent = cur_dir;
     ne.type = TYPE_DIR;
@@ -481,21 +654,15 @@ int kpfs_mkdir(const char *name)
         return -1;
     }
 
-    /* Step 3: advance the superblock counters */
+    /* Step 3: advance the ID counter */
     sb.next_id++;
-    sb.dir_next++;
     if (write_super() != 0) {
         vga_eprint("Write failed. Nothing was changed.\n");
         return -1;
     }
 
-    /* Step 4: commit by adding the new ID to the parent's child list */
-    if (read_children(&parent) != 0) {
-        vga_eprint("Read failed.\n");
-        return -1;
-    }
-    kids[n] = new_id;
-    if (write_children(&parent) != 0) {
+    /* Step 4: commit by adding the ID to the parent's list */
+    if (link_child(cur_dir, new_id) != 0) {
         vga_eprint("Could not update the parent folder.\n");
         return -1;
     }
@@ -515,33 +682,23 @@ int kpfs_cd(const char *name)
         cur_dir = ROOT_ID;
         return 0;
     }
-    if (streq(name, ".")) {
+    if (streq(name, "."))
         return 0;
-    }
 
     struct kpfs_entry here;
     if (find_by_id(cur_dir, &here) != 0) {
         vga_eprint("Current folder is missing.\n");
         return -1;
     }
-
     if (streq(name, "..")) {
-        cur_dir = here.parent;   /* the root's parent is the root itself */
+        cur_dir = here.parent;
         return 0;
     }
 
-    if (read_children(&here) != 0) {
-        vga_eprint("Read failed.\n");
-        return -1;
-    }
-
-    for (unsigned int n = 0; n < CHILDREN_MAX && kids[n]; n++) {
-        struct kpfs_entry e;
-        if (find_by_id(kids[n], &e) == 0 &&
-            e.type == TYPE_DIR && name_eq(e.name, name)) {
-            cur_dir = e.id;
-            return 0;
-        }
+    struct kpfs_entry d;
+    if (child_lookup(cur_dir, name, &d, 0) == 0 && d.type == TYPE_DIR) {
+        cur_dir = d.id;
+        return 0;
     }
 
     vga_wprint("No folder named ");
@@ -564,27 +721,357 @@ int kpfs_pwd(void)
     return 0;
 }
 
-/* ---- File commands: stage 2 ---- */
+/* ---- File commands ---- */
 
+/* Create or replace a file in the current folder */
 int kpfs_write(const char *name, const char *data, unsigned int len)
 {
-    (void)name;
-    (void)data;
-    (void)len;
-    vga_wprint("Saving files comes in KPFS v2 stage 2.\n");
-    return -1;
+    if (need_fs() != 0)
+        return -1;
+
+    if (!valid_name(name)) {
+        vga_wprint("Invalid name: 1-15 characters, no spaces or '/'.\n");
+        return -1;
+    }
+
+    struct kpfs_entry ne;
+    int exists = (child_lookup(cur_dir, name, &ne, 0) == 0);
+    if (exists && ne.type == TYPE_DIR) {
+        vga_wprint("A folder with that name already exists here.\n");
+        return -1;
+    }
+
+    uint32_t slot = 0;
+    if (exists) {
+        /* Keep the same ID, name, and parent. Only the storage fields change. */
+        if (find_at(ne.id, &ne, &slot) != 0) {
+            vga_eprint("Read error.\n");
+            return -1;
+        }
+    } else {
+        struct kpfs_entry dir;
+        if (load_dir(cur_dir, &dir) != 0) {
+            vga_eprint("Current folder is missing.\n");
+            return -1;
+        }
+        if (count_kids() >= CHILDREN_MAX) {
+            vga_wprint("This folder is full.\n");
+            return -1;
+        }
+        if (find_free_slot(&slot) != 0) {
+            vga_wprint("The entry table is full.\n");
+            return -1;
+        }
+        zero_bytes(&ne, sizeof(ne));
+        set_name(&ne, name);
+        ne.parent = cur_dir;
+        ne.type = TYPE_FILE;
+    }
+
+    uint64_t need = ((uint64_t)len + KPFS_SECTOR - 1) / KPFS_SECTOR;
+    uint64_t start = sb.file_start;
+
+    if (need > 0 && find_run(need, &start) != 0) {
+        vga_wprint("Not enough free space.\n");
+        return -1;
+    }
+
+    /* Step 1: write the data to free sectors. The old file is untouched. */
+    for (uint64_t k = 0; k < need; k++) {
+        uint64_t off = k * KPFS_SECTOR;
+        uint64_t left = (uint64_t)len - off;
+        unsigned int n = left > KPFS_SECTOR ? KPFS_SECTOR : (unsigned int)left;
+
+        zero_bytes(sec, KPFS_SECTOR);
+        copy_bytes(sec, data + off, n);
+        if (block_write(start + k, sec) != 0) {
+            vga_eprint("Write failed. The old file is unchanged.\n");
+            return -1;
+        }
+    }
+
+    /* Step 2: a new file gets the next ID */
+    if (!exists) {
+        ne.id = sb.next_id;
+        sb.next_id++;
+        if (write_super() != 0) {
+            vga_eprint("Write failed. Nothing was changed.\n");
+            return -1;
+        }
+    }
+
+    /* Step 3: commit the entry in one sector write */
+    ne.start = start;
+    ne.size = len;
+    ne.alloc = need;
+
+    if (entry_put(slot, &ne) != 0) {
+        vga_eprint("Could not update the entry table. The old file is unchanged.\n");
+        return -1;
+    }
+
+    /* Step 4: a new file joins its folder last, so a failure leaves nothing visible */
+    if (!exists && link_child(cur_dir, ne.id) != 0) {
+        vga_eprint("Could not add the file to its folder.\n");
+        return -1;
+    }
+
+    vga_print(exists ? "Replaced " : "Saved ");
+    vga_print(name);
+    vga_print(" (");
+    vga_print_u64(len);
+    vga_print(" bytes)\n");
+    return 0;
 }
 
 int kpfs_read(const char *name)
 {
-    (void)name;
-    vga_wprint("Reading files comes in KPFS v2 stage 2.\n");
+    if (need_fs() != 0)
+        return -1;
+
+    struct kpfs_entry e;
+    if (child_lookup(cur_dir, name, &e, 0) != 0) {
+        vga_wprint("No file named ");
+        vga_wprint(name);
+        vga_putchar('\n');
+        return -1;
+    }
+    if (e.type != TYPE_FILE) {
+        vga_wprint(name);
+        vga_wprint(" is a folder. Use cd to open it.\n");
+        return -1;
+    }
+
+    /* Read only the file's real size, not its whole sectors */
+    uint64_t remaining = e.size;
+    for (uint64_t k = 0; k < e.alloc && remaining > 0; k++) {
+        if (block_read(e.start + k, sec) != 0) {
+            vga_eprint("Read failed.\n");
+            return -1;
+        }
+
+        unsigned int n = remaining > KPFS_SECTOR ? KPFS_SECTOR : (unsigned int)remaining;
+        for (unsigned int i = 0; i < n; i++) {
+            char c = (char)sec[i];
+            if (c == '\n' || (c >= 0x20 && c <= 0x7E))
+                vga_putchar(c);
+            else
+                vga_putchar('.');
+        }
+        remaining -= n;
+    }
+    vga_putchar('\n');
+    return 0;
+}
+
+/* Delete a file. Folder deletion comes in stage 3. */
+int kpfs_remove(const char *name, int force)
+{
+    if (need_fs() != 0)
+        return -1;
+
+    struct kpfs_entry e;
+    if (child_lookup(cur_dir, name, &e, 0) != 0) {
+        vga_wprint("No file or folder named ");
+        vga_wprint(name);
+        vga_putchar('\n');
+        return -1;
+    }
+
+    if (e.type == TYPE_DIR) {
+        /* Never delete a folder we're inside, or any folder above us */
+        if (is_inside(cur_dir, e.id)) {
+            vga_eprint("You are inside that folder. Use cd to leave it first.\n");
+            return -1;
+        }
+
+        struct kpfs_entry d;
+        if (load_dir(e.id, &d) != 0) {
+            vga_eprint("Read error.\n");
+            return -1;
+        }
+
+        unsigned int count = count_kids();
+        if (count > 0 && !force) {
+            vga_wprint("Folder ");
+            vga_wprint(name);
+            vga_wprint(" has ");
+            vga_print_u64(count);
+            vga_wprint(" items. Use: rm -y ");
+            vga_wprint(name);
+            vga_putchar('\n');
+            return -1;
+        }
+    }
+
+    /* Step 1: unlink from the current folder. This is the commit point. */
+    if (unlink_child(cur_dir, e.id) != 0) {
+        vga_eprint("Could not update the folder. Nothing was changed.\n");
+        return -1;
+    }
+
+    /* Step 2: free the item, and everything inside it for folders */
+    if (delete_tree(e.id) != 0) {
+        vga_eprint("Delete partly finished. Run ls to check.\n");
+        return -1;
+    }
+
+    vga_print(e.type == TYPE_DIR ? "Deleted folder " : "Deleted ");
+    vga_print(name);
+    vga_putchar('\n');
+    return 0;
+}
+
+/* Resolve a destination folder: "/", ".", "..", or a child folder name */
+static int resolve_dest(const char *name, uint32_t *out)
+{
+    if (streq(name, "/")) {
+        *out = ROOT_ID;
+        return 0;
+    }
+    if (streq(name, ".")) {
+        *out = cur_dir;
+        return 0;
+    }
+
+    struct kpfs_entry here;
+    if (find_by_id(cur_dir, &here) != 0)
+        return -1;
+    if (streq(name, "..")) {
+        *out = here.parent;
+        return 0;
+    }
+
+    struct kpfs_entry d;
+    if (child_lookup(cur_dir, name, &d, 0) == 0 && d.type == TYPE_DIR) {
+        *out = d.id;
+        return 0;
+    }
+
+    vga_wprint("No folder named ");
+    vga_wprint(name);
+    vga_putchar('\n');
     return -1;
 }
 
-int kpfs_remove(const char *name)
+/* Move a file or folder into another folder. The ID never changes. */
+int kpfs_move(const char *name, const char *dest)
 {
-    (void)name;
-    vga_wprint("Deleting files comes in KPFS v2 stage 2.\n");
-    return -1;
+    if (need_fs() != 0)
+        return -1;
+
+    struct kpfs_entry e;
+    if (child_lookup(cur_dir, name, &e, 0) != 0) {
+        vga_wprint("No file or folder named ");
+        vga_wprint(name);
+        vga_putchar('\n');
+        return -1;
+    }
+
+    uint32_t dest_id;
+    if (resolve_dest(dest, &dest_id) != 0)
+        return -1;
+
+    if (dest_id == cur_dir) {
+        vga_wprint("It is already in that folder.\n");
+        return -1;
+    }
+    if (e.type == TYPE_DIR && is_inside(dest_id, e.id)) {
+        vga_eprint("A folder can't be moved into itself or one of its subfolders.\n");
+        return -1;
+    }
+
+    struct kpfs_entry clash;
+    if (child_lookup(dest_id, name, &clash, 0) == 0) {
+        vga_wprint("That folder already has an item with that name.\n");
+        return -1;
+    }
+
+    struct kpfs_entry dd;
+    if (load_dir(dest_id, &dd) != 0) {
+        vga_eprint("Destination folder is missing.\n");
+        return -1;
+    }
+    if (count_kids() >= CHILDREN_MAX) {
+        vga_wprint("The destination folder is full.\n");
+        return -1;
+    }
+
+    uint32_t slot;
+    struct kpfs_entry live;
+    if (find_at(e.id, &live, &slot) != 0) {
+        vga_eprint("Read error.\n");
+        return -1;
+    }
+
+    /* Step 1: add to the destination. If this fails, nothing has changed. */
+    if (link_child(dest_id, e.id) != 0) {
+        vga_eprint("Move failed. Nothing was changed.\n");
+        return -1;
+    }
+
+    /* Step 2: remove from the source. If this fails, undo step 1. */
+    if (unlink_child(cur_dir, e.id) != 0) {
+        unlink_child(dest_id, e.id);
+        vga_eprint("Move failed. Nothing was changed.\n");
+        return -1;
+    }
+
+    /* Step 3: record the new parent */
+    live.parent = dest_id;
+    if (entry_put(slot, &live) != 0) {
+        vga_eprint("Move partly finished. Check the folders with ls.\n");
+        return -1;
+    }
+
+    vga_print("Moved ");
+    vga_print(name);
+    vga_putchar('\n');
+    return 0;
+}
+
+/* Rename a file or folder in the current folder. The ID never changes. */
+int kpfs_rename(const char *old_name, const char *new_name)
+{
+    if (need_fs() != 0)
+        return -1;
+
+    if (!valid_name(new_name)) {
+        vga_wprint("Invalid name: 1-15 characters, no spaces or '/'.\n");
+        return -1;
+    }
+
+    struct kpfs_entry e;
+    if (child_lookup(cur_dir, old_name, &e, 0) != 0) {
+        vga_wprint("No file or folder named ");
+        vga_wprint(old_name);
+        vga_putchar('\n');
+        return -1;
+    }
+
+    struct kpfs_entry clash;
+    if (child_lookup(cur_dir, new_name, &clash, 0) == 0) {
+        vga_wprint("A file or folder with that name already exists here.\n");
+        return -1;
+    }
+
+    uint32_t slot;
+    struct kpfs_entry live;
+    if (find_at(e.id, &live, &slot) != 0) {
+        vga_eprint("Read error.\n");
+        return -1;
+    }
+
+    set_name(&live, new_name);
+    if (entry_put(slot, &live) != 0) {
+        vga_eprint("Could not rename. Nothing was changed.\n");
+        return -1;
+    }
+
+    vga_print("Renamed ");
+    vga_print(old_name);
+    vga_print(" to ");
+    vga_print(new_name);
+    vga_putchar('\n');
+    return 0;
 }

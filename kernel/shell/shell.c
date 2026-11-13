@@ -321,18 +321,20 @@ static void cmd_rm(int argc, char **argv);
 static void cmd_mkdir(int argc, char **argv);
 static void cmd_cd(int argc, char **argv);
 static void cmd_pwd(int argc, char **argv);
+static void cmd_mv(int argc, char **argv);
+static void cmd_rename(int argc, char **argv);
 
 /* Add a new command by adding one line here */
 static const struct command commands[] = {
     { "help",        "list all commands",                 cmd_help,              0 },
     { "clear",       "clear the screen",                  cmd_clear,             0 },
     { "echo",        "print text: echo <text>",           cmd_echo,              0 },
-    { "version",     "show the KpOS version",             cmd_version,           0 },
-    { "meminfo",     "show free memory",                  cmd_meminfo,           0 },
+    { "version",     "show the KpOS version",             cmd_version,           1 },
+    { "meminfo",     "show free memory",                  cmd_meminfo,           1 },
     { "uptime",      "show time since boot",              cmd_uptime,            0 },
-    { "cpuinfo",     "show the CPU vendor",               cmd_cpuinfo,           0 },
+    { "cpuinfo",     "show the CPU vendor",               cmd_cpuinfo,           1 },
     { "date",        "show the clock time",               cmd_date,              0 },
-    { "history",     "list previous commands",            cmd_history,           0 },
+    { "history",     "list previous commands",            cmd_history,           1 },
     { "reboot",      "restart the machine",               cmd_reboot,            0 },
     { "shutdown",    "power off the machine",             cmd_shutdown,          0 },
     { "halt",        "stop the CPU",                      cmd_halt,              1 },
@@ -349,16 +351,18 @@ static const struct command commands[] = {
     { "pic",         "change the typed text color",       cmd_inputcolor,        0 },
     { "pef",         "prompt end: text, clock, reaction, check, reset", cmd_pef, 0 },
     { "disks",       "check for a disk drive",            cmd_disks,             0 },
-    { "diskread",    "show a sector: diskread <sector>",  cmd_diskread,          0 },
-    { "diskwrite",   "save text: diskwrite <sector> <text>", cmd_diskwrite,      0 },
+    { "diskread",    "show a sector: diskread <sector>",  cmd_diskread,          1 },
+    { "diskwrite",   "save text: diskwrite <sector> <text>", cmd_diskwrite,      1 },
     { "format",      "erase and format the disk (format yes)", cmd_format,       0 },
     { "ls",          "list files",                        cmd_ls,                0 },
     { "write",       "save a file: write <name> <text>",  cmd_write,             0 },
     { "cat",         "show a file: cat <name>",           cmd_cat,               0 },
-    { "rm",          "delete a file: rm <name>",          cmd_rm,                0 },
+    { "rm",          "delete: rm <name>, rm -y <folder>", cmd_rm,                0 },
     { "mkdir",       "make a folder: mkdir <name>",       cmd_mkdir,             0 },
     { "cd",          "change folder: cd <name>, cd .., cd /", cmd_cd,            0 },
     { "pwd",         "show the current folder",           cmd_pwd,               0 },
+    { "mv",          "move: mv <name> <folder>",          cmd_mv,                0 },
+    { "rename",      "rename: rename <old> <new>",        cmd_rename,            0 },
 };
 
 #define NUM_COMMANDS (sizeof(commands) / sizeof(commands[0]))
@@ -1031,11 +1035,19 @@ static void cmd_cat(int argc, char **argv)
 
 static void cmd_rm(int argc, char **argv)
 {
-    if (argc < 2) {
-        vga_lprint("Usage: rm <name>\n");
+    int force = 0;
+    int i = 1;
+
+    if (argc >= 2 && streq(argv[1], "-y")) {
+        force = 1;
+        i = 2;
+    }
+
+    if (argc <= i) {
+        vga_lprint("Usage: rm <name> or rm -y <name>\n");
         return;
     }
-    kpfs_remove(argv[1]);
+    kpfs_remove(argv[i], force);
 }
 
 static void cmd_mkdir(int argc, char **argv)
@@ -1058,6 +1070,24 @@ static void cmd_pwd(int argc, char **argv)
     (void)argc;
     (void)argv;
     kpfs_pwd();
+}
+
+static void cmd_mv(int argc, char **argv)
+{
+    if (argc < 3) {
+        vga_lprint("Usage: mv <name> <folder>   (folder can be .., / or a folder name)\n");
+        return;
+    }
+    kpfs_move(argv[1], argv[2]);
+}
+
+static void cmd_rename(int argc, char **argv)
+{
+    if (argc < 3) {
+        vga_lprint("Usage: rename <old> <new>\n");
+        return;
+    }
+    kpfs_rename(argv[1], argv[2]);
 }
 
 /* ---- Shell input and startup ---- */
