@@ -13,7 +13,7 @@
 
 #define LINE_MAX     128
 #define MAX_ARGS     8
-#define KPOS_VERSION "v0.0.5"
+#define KPOS_VERSION "v0.0.6"
 #define HIST_MAX     16
 #define SCREEN_COLS  80
 #define COL_NAME     12
