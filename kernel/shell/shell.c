@@ -7,6 +7,9 @@
 #include "heap.h"
 #include "irq.h"
 #include "random.h"
+#include "ata.h"
+#include "block.h"
+#include "kpfs.h"
 
 #define LINE_MAX     128
 #define MAX_ARGS     8
@@ -307,33 +310,49 @@ static void cmd_prompt(int argc, char **argv);
 static void cmd_promptcolor(int argc, char **argv);
 static void cmd_inputcolor(int argc, char **argv);
 static void cmd_pef(int argc, char **argv);
+static void cmd_disks(int argc, char **argv);
+static void cmd_diskread(int argc, char **argv);
+static void cmd_diskwrite(int argc, char **argv);
+static void cmd_format(int argc, char **argv);
+static void cmd_ls(int argc, char **argv);
+static void cmd_write(int argc, char **argv);
+static void cmd_cat(int argc, char **argv);
+static void cmd_rm(int argc, char **argv);
 
 /* Add a new command by adding one line here */
 static const struct command commands[] = {
-    { "help",        "list all commands",                 cmd_help,        0 },
-    { "clear",       "clear the screen",                  cmd_clear,       0 },
-    { "echo",        "print text: echo <text>",           cmd_echo,        0 },
-    { "version",     "show the KpOS version",             cmd_version,     0 },
-    { "meminfo",     "show free memory",                  cmd_meminfo,     0 },
-    { "uptime",      "show time since boot",              cmd_uptime,      0 },
-    { "cpuinfo",     "show the CPU vendor",               cmd_cpuinfo,     0 },
-    { "date",        "show the clock time",               cmd_date,        0 },
-    { "history",     "list previous commands",            cmd_history,     0 },
-    { "reboot",      "restart the machine",               cmd_reboot,      0 },
-    { "shutdown",    "power off the machine",             cmd_shutdown,    0 },
-    { "halt",        "stop the CPU",                      cmd_halt,        1 },
-    { "color",       "change text color: color <0-15>",   cmd_color,       0 },
-    { "beep",        "play a short tone",                 cmd_beep,        0 },
-    { "fortune",     "print a random quote",              cmd_fortune,     0 },
-    { "roll",        "roll a six-sided die",              cmd_roll,        0 },
-    { "about",       "show the KpOS banner",              cmd_about,       0 },
-    { "prompt",      "change the prompt text",            cmd_prompt,      1 },
-    { "prt",         "change the prompt text",            cmd_prompt,      0 },
-    { "promptcolor", "change the prompt color",           cmd_promptcolor, 1 },
-    { "prc",         "change the prompt color",           cmd_promptcolor, 0 },
-    { "inputcolor",  "change the typed text color",       cmd_inputcolor,  1 },
-    { "pic",         "change the typed text color",       cmd_inputcolor,  0 },
+    { "help",        "list all commands",                 cmd_help,              0 },
+    { "clear",       "clear the screen",                  cmd_clear,             0 },
+    { "echo",        "print text: echo <text>",           cmd_echo,              0 },
+    { "version",     "show the KpOS version",             cmd_version,           0 },
+    { "meminfo",     "show free memory",                  cmd_meminfo,           0 },
+    { "uptime",      "show time since boot",              cmd_uptime,            0 },
+    { "cpuinfo",     "show the CPU vendor",               cmd_cpuinfo,           0 },
+    { "date",        "show the clock time",               cmd_date,              0 },
+    { "history",     "list previous commands",            cmd_history,           0 },
+    { "reboot",      "restart the machine",               cmd_reboot,            0 },
+    { "shutdown",    "power off the machine",             cmd_shutdown,          0 },
+    { "halt",        "stop the CPU",                      cmd_halt,              1 },
+    { "color",       "change text color: color <0-15>",   cmd_color,             0 },
+    { "beep",        "play a short tone",                 cmd_beep,              0 },
+    { "fortune",     "print a random quote",              cmd_fortune,           0 },
+    { "roll",        "roll a six-sided die",              cmd_roll,              0 },
+    { "about",       "show the KpOS banner",              cmd_about,             0 },
+    { "prompt",      "change the prompt text",            cmd_prompt,            1 },
+    { "prt",         "change the prompt text",            cmd_prompt,            0 },
+    { "promptcolor", "change the prompt color",           cmd_promptcolor,       1 },
+    { "prc",         "change the prompt color",           cmd_promptcolor,       0 },
+    { "inputcolor",  "change the typed text color",       cmd_inputcolor,        1 },
+    { "pic",         "change the typed text color",       cmd_inputcolor,        0 },
     { "pef",         "prompt end: text, clock, reaction, check, reset", cmd_pef, 0 },
+    { "disks",       "check for a disk drive",            cmd_disks,             0 },
+    { "diskread",    "show a sector: diskread <sector>",  cmd_diskread,          0 },
+    { "diskwrite",   "save text: diskwrite <sector> <text>", cmd_diskwrite,      0 },
+    { "format",      "erase and format the disk (format yes)", cmd_format,       0 },
+    { "ls",          "list files",                        cmd_ls,                0 },
+    { "write",       "save a file: write <name> <text>",  cmd_write,             0 },
+    { "cat",         "show a file: cat <name>",           cmd_cat,               0 },
+    { "rm",          "delete a file: rm <name>",          cmd_rm,                0 },
 };
 
 #define NUM_COMMANDS (sizeof(commands) / sizeof(commands[0]))
@@ -352,6 +371,23 @@ static void print_udec(unsigned int value)
     while (i > 0)
         vga_putchar(buf[--i]);
 }
+
+static int parse_uint(const char *s, unsigned int *out)
+{
+    unsigned int n = 0;
+
+    if (!*s)
+        return 0;
+    for (const char *p = s; *p; p++) {
+        if (*p < '0' || *p > '9')
+            return 0;
+        n = n * 10 + (*p - '0');
+    }
+    *out = n;
+    return 1;
+}
+
+static unsigned char sector_buf[512];
 
 /* Split the line in place into words. Returns the word count. */
 static int tokenize(char *s, char **argv)
@@ -863,6 +899,137 @@ static void cmd_pef(int argc, char **argv)
         join_args(prompt_end, PEF_MAX, 1, argc, argv);
         vga_print("Prompt end changed.\n");
     }
+}
+
+static void cmd_disks(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    if (block_init() != 0) {
+        vga_wprint("No disk found.\n");
+        return;
+    }
+
+    vga_print("Disk: ");
+    vga_print_u64(block_sectors());
+    vga_print(" sectors, ");
+    vga_print_u64(block_sectors() >> 11);   /* 2048 sectors = 1 MB */
+    vga_print(" MB\n");
+
+    vga_print("Filesystem: ");
+    vga_print(kpfs_probe() ? "KPFS v1 (formatted)\n" : "not formatted\n");
+}
+
+static void cmd_diskread(int argc, char **argv)
+{
+    unsigned int lba;
+
+    if (argc < 2 || !parse_uint(argv[1], &lba)) {
+        vga_lprint("Usage: diskread <sector>\n");
+        return;
+    }
+
+    if (ata_read(lba, sector_buf)) {
+        vga_eprint("Read failed. Is a disk attached?\n");
+        return;
+    }
+
+    const char *hex = "0123456789ABCDEF";
+
+    /* Show the first 64 bytes: 16 per row, hex on the left, text on the right */
+    for (unsigned int row = 0; row < 4; row++) {
+        for (unsigned int i = 0; i < 16; i++) {
+            unsigned char b = sector_buf[row * 16 + i];
+            vga_putchar(hex[b >> 4]);
+            vga_putchar(hex[b & 0x0F]);
+            vga_putchar(' ');
+        }
+        vga_print(" |");
+        for (unsigned int i = 0; i < 16; i++) {
+            unsigned char b = sector_buf[row * 16 + i];
+            vga_putchar((b >= 0x20 && b <= 0x7E) ? b : '.');
+        }
+        vga_print("|\n");
+    }
+}
+
+static void cmd_diskwrite(int argc, char **argv)
+{
+    unsigned int lba;
+
+    if (argc < 3 || !parse_uint(argv[1], &lba)) {
+        vga_lprint("Usage: diskwrite <sector> <text>\n");
+        return;
+    }
+
+    /* Clear the sector, then copy the text in. Spaces between words are kept as single spaces. */
+    for (unsigned int i = 0; i < 512; i++)
+        sector_buf[i] = 0;
+    join_args((char *)sector_buf, 511, 2, argc, argv);
+
+    if (ata_write(lba, sector_buf)) {
+        vga_eprint("Write failed. Is a disk attached?\n");
+        return;
+    }
+    vga_print("Saved to sector ");
+    print_udec(lba);
+    vga_putchar('\n');
+}
+
+static void cmd_format(int argc, char **argv)
+{
+    /* Formatting erases the disk, so it needs an explicit confirmation word */
+    if (argc < 2 || !streq(argv[1], "yes")) {
+        vga_wprint("format erases everything on the disk. To continue, type: format yes\n");
+        return;
+    }
+
+    kpfs_format();
+}
+
+static void cmd_ls(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    kpfs_list();
+}
+
+static void cmd_write(int argc, char **argv)
+{
+    if (argc < 2) {
+        vga_lprint("Usage: write <name> <text>\n");
+        return;
+    }
+
+    /* Text is everything after the name. Words are joined with single spaces. */
+    static char text[LINE_MAX];
+    unsigned int len = 0;
+
+    if (argc >= 3) {
+        join_args(text, LINE_MAX - 1, 2, argc, argv);
+        len = str_len(text);
+    }
+
+    kpfs_write(argv[1], text, len);
+}
+
+static void cmd_cat(int argc, char **argv)
+{
+    if (argc < 2) {
+        vga_lprint("Usage: cat <name>\n");
+        return;
+    }
+    kpfs_read(argv[1]);
+}
+
+static void cmd_rm(int argc, char **argv)
+{
+    if (argc < 2) {
+        vga_lprint("Usage: rm <name>\n");
+        return;
+    }
+    kpfs_remove(argv[1]);
 }
 
 /* ---- Shell input and startup ---- */

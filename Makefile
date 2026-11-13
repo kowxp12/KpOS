@@ -20,14 +20,16 @@ CFLAGS = -m32 \
          -Ikernel/drivers \
          -Ikernel/shell \
 		 -Ikernel/acpi \
-		 -Ikernel/mm
+		 -Ikernel/mm \
+		 -Ikernel/fs
 
 # Folders where make looks for source files
-vpath %.c   kernel kernel/cpu kernel/drivers kernel/shell kernel/acpi kernel/mm
+vpath %.c   kernel kernel/cpu kernel/drivers kernel/shell kernel/acpi kernel/mm kernel/fs
 vpath %.asm kernel/cpu
 
 OBJS = build/boot.o build/kernel.o \
-       build/vga.o build/keyboard.o build/shell.o build/acpi.o build/memmap.o build/pmm.o build/heap.o build/random.o\
+       build/vga.o build/keyboard.o build/shell.o build/acpi.o build/memmap.o build/pmm.o build/heap.o build/random.o build/ata.o \
+       build/block.o build/kpfs.o \
        build/idt.o build/pic.o build/irq.o build/interrupts.o
 
 .PHONY: all iso run clean
@@ -61,9 +63,17 @@ iso: build/kernel.elf
 	cp boot/grub/grub.cfg build/isodir/boot/grub/
 	grub2-mkrescue -o build/kpos.iso build/isodir
 
-run: iso
+DISK = disk.img
+
+disk: $(DISK)
+
+$(DISK):
+	dd if=/dev/zero of=$(DISK) bs=512 count=2048
+
+run: iso $(DISK)
 	qemu-system-x86_64 \
 	    -cdrom build/kpos.iso \
+	    -hda $(DISK) \
 	    -m 128M
 
 clean:

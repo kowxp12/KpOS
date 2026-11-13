@@ -1,3 +1,5 @@
+#include <stdint.h>
+
 #ifndef VGA_H
 #define VGA_H
 
@@ -22,6 +24,8 @@ void vga_put_right(int row, const char *s, unsigned char color);
 
 void vga_put_at(unsigned int index, char c, unsigned char color);
 void vga_set_cursor_index(unsigned int index);
+
+void vga_print_u64(uint64_t v);
 
 unsigned int vga_scroll_count(void);
 

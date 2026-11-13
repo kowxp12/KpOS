@@ -183,3 +183,31 @@ void vga_set_cursor_index(unsigned int index)
     cursor_col = index % VGA_WIDTH;
     update_cursor();
 }
+
+/* Prints a 64-bit number. It divides by 10 with shifts and subtraction,
+   so no 64-bit division library is needed. */
+void vga_print_u64(uint64_t v)
+{
+    char buf[21];
+    int i = 0;
+
+    if (v == 0)
+        buf[i++] = '0';
+
+    while (v > 0) {
+        uint64_t q = 0, r = 0;
+        for (int b = 63; b >= 0; b--) {
+            r = (r << 1) | ((v >> b) & 1);
+            q <<= 1;
+            if (r >= 10) {
+                r -= 10;
+                q |= 1;
+            }
+        }
+        buf[i++] = '0' + (char)r;
+        v = q;
+    }
+
+    while (i > 0)
+        vga_putchar(buf[--i]);
+}
