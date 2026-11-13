@@ -18,7 +18,7 @@ Current version: **v0.0.5**
 - Powers off through ACPI (tested in QEMU) and reboots
 - Includes a few fun commands: `fortune`, `roll`, `beep`, and `about`
 
-See [docs/commands.md](docs/commands.md) for every command and keyboard shortcut, and [docs/color-dock.md](docs/color-dock.md) for the color reference.
+See [docs/commands.md](docs/commands.md) for every command and keyboard shortcut, and [docs/color.md](docs/color.md) for the color reference.
 
 ## Requirements
 
