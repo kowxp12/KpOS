@@ -1,5 +1,5 @@
 /*
-KpOS Kernel v0.0.2
+KpOS Kernel v0.0.7
 */
 #include "vga.h"
 #include "idt.h"

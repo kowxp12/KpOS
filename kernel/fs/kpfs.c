@@ -59,6 +59,7 @@ static uint8_t  sec[KPFS_SECTOR];       /* scratch sector */
 static uint32_t kids[CHILDREN_MAX];     /* scratch child list */
 static struct kpfs_super sb;            /* superblock in memory */
 static uint32_t cur_dir = ROOT_ID;      /* current folder */
+static int make_folder(uint32_t parent_id, const char *name, uint32_t *out_id);
 
 /* ---- Small helpers ---- */
 
@@ -603,69 +604,9 @@ int kpfs_mkdir(const char *name)
         return -1;
     }
 
-    struct kpfs_entry dup;
-    if (child_lookup(cur_dir, name, &dup, 0) == 0) {
-        vga_wprint("A file or folder with that name already exists here.\n");
+    uint32_t id;
+    if (make_folder(cur_dir, name, &id) != 0)
         return -1;
-    }
-
-    struct kpfs_entry parent;
-    if (load_dir(cur_dir, &parent) != 0) {
-        vga_eprint("Current folder is missing.\n");
-        return -1;
-    }
-    if (count_kids() >= CHILDREN_MAX) {
-        vga_wprint("This folder is full.\n");
-        return -1;
-    }
-
-    uint32_t slot;
-    if (find_free_slot(&slot) != 0) {
-        vga_wprint("The entry table is full.\n");
-        return -1;
-    }
-
-    uint64_t dir_sector;
-    if (find_free_dir_sector(&dir_sector) != 0) {
-        vga_wprint("No room for more folders on this disk.\n");
-        return -1;
-    }
-
-    uint32_t new_id = sb.next_id;
-
-    /* Step 1: empty child list for the new folder */
-    zero_bytes(kids, sizeof(kids));
-    if (block_write(dir_sector, kids) != 0) {
-        vga_eprint("Write failed. Nothing was changed.\n");
-        return -1;
-    }
-
-    /* Step 2: the new folder's entry */
-    struct kpfs_entry ne;
-    zero_bytes(&ne, sizeof(ne));
-    set_name(&ne, name);
-    ne.id = new_id;
-    ne.parent = cur_dir;
-    ne.type = TYPE_DIR;
-    ne.start = dir_sector;
-
-    if (entry_put(slot, &ne) != 0) {
-        vga_eprint("Write failed. Nothing was changed.\n");
-        return -1;
-    }
-
-    /* Step 3: advance the ID counter */
-    sb.next_id++;
-    if (write_super() != 0) {
-        vga_eprint("Write failed. Nothing was changed.\n");
-        return -1;
-    }
-
-    /* Step 4: commit by adding the ID to the parent's list */
-    if (link_child(cur_dir, new_id) != 0) {
-        vga_eprint("Could not update the parent folder.\n");
-        return -1;
-    }
 
     vga_print("Created folder ");
     vga_print(name);
@@ -1108,5 +1049,243 @@ int kpfs_rename(const char *old_name, const char *new_name)
     vga_print(" to ");
     vga_print(new_name);
     vga_putchar('\n');
+    return 0;
+}
+
+int kpfs_exists(const char *name)
+{
+    if (need_fs() != 0)
+        return -1;
+
+    struct kpfs_entry e;
+    return child_lookup(cur_dir, name, &e, 0) == 0 ? 1 : 0;
+}
+
+/* Create an empty folder inside parent_id. Stores the new ID in *out_id. */
+static int make_folder(uint32_t parent_id, const char *name, uint32_t *out_id)
+{
+    struct kpfs_entry dup;
+    if (child_lookup(parent_id, name, &dup, 0) == 0) {
+        vga_wprint("A file or folder with that name already exists here.\n");
+        return -1;
+    }
+
+    struct kpfs_entry parent;
+    if (load_dir(parent_id, &parent) != 0) {
+        vga_eprint("Parent folder is missing.\n");
+        return -1;
+    }
+    if (count_kids() >= CHILDREN_MAX) {
+        vga_wprint("This folder is full.\n");
+        return -1;
+    }
+
+    uint32_t slot;
+    if (find_free_slot(&slot) != 0) {
+        vga_wprint("The entry table is full.\n");
+        return -1;
+    }
+
+    uint64_t dir_sector;
+    if (find_free_dir_sector(&dir_sector) != 0) {
+        vga_wprint("No room for more folders on this disk.\n");
+        return -1;
+    }
+
+    uint32_t new_id = sb.next_id;
+
+    /* Step 1: empty child list for the new folder */
+    zero_bytes(kids, sizeof(kids));
+    if (block_write(dir_sector, kids) != 0) {
+        vga_eprint("Write failed. Nothing was changed.\n");
+        return -1;
+    }
+
+    /* Step 2: the new folder's entry */
+    struct kpfs_entry ne;
+    zero_bytes(&ne, sizeof(ne));
+    set_name(&ne, name);
+    ne.id = new_id;
+    ne.parent = parent_id;
+    ne.type = TYPE_DIR;
+    ne.start = dir_sector;
+    if (entry_put(slot, &ne) != 0) {
+        vga_eprint("Write failed. Nothing was changed.\n");
+        return -1;
+    }
+
+    /* Step 3: advance the ID counter */
+    sb.next_id++;
+    if (write_super() != 0) {
+        vga_eprint("Write failed. Nothing was changed.\n");
+        return -1;
+    }
+
+    /* Step 4: commit by adding the ID to the parent's list */
+    if (link_child(parent_id, new_id) != 0) {
+        vga_eprint("Could not update the parent folder.\n");
+        return -1;
+    }
+
+    *out_id = new_id;
+    return 0;
+}
+
+#define NO_ID 0xFFFFFFFFu
+
+/* Copy one file's data and entry into parent_id under a new name */
+static int copy_file(const struct kpfs_entry *src, uint32_t parent_id, const char *name)
+{
+    struct kpfs_entry dir;
+    if (load_dir(parent_id, &dir) != 0)
+        return -1;
+    if (count_kids() >= CHILDREN_MAX) {
+        vga_wprint("A folder is full.\n");
+        return -1;
+    }
+
+    uint32_t slot;
+    if (find_free_slot(&slot) != 0) {
+        vga_wprint("The entry table is full.\n");
+        return -1;
+    }
+
+    uint64_t start = sb.file_start;
+    if (src->alloc > 0 && find_run(src->alloc, &start) != 0) {
+        vga_wprint("Not enough free space.\n");
+        return -1;
+    }
+
+    /* Step 1: copy the sectors. The source file is only read. */
+    for (uint64_t k = 0; k < src->alloc; k++) {
+        if (block_read(src->start + k, sec) != 0 ||
+            block_write(start + k, sec) != 0) {
+            vga_eprint("Copy failed while moving data.\n");
+            return -1;
+        }
+    }
+
+    /* Step 2: a new ID for the copy */
+    uint32_t id = sb.next_id;
+    sb.next_id++;
+    if (write_super() != 0) {
+        vga_eprint("Write failed.\n");
+        return -1;
+    }
+
+    /* Step 3: commit the entry, then link it into the folder */
+    struct kpfs_entry ne;
+    zero_bytes(&ne, sizeof(ne));
+    set_name(&ne, name);
+    ne.id = id;
+    ne.parent = parent_id;
+    ne.type = TYPE_FILE;
+    ne.start = start;
+    ne.size = src->size;
+    ne.alloc = src->alloc;
+
+    if (entry_put(slot, &ne) != 0) {
+        vga_eprint("Could not update the entry table.\n");
+        return -1;
+    }
+    if (link_child(parent_id, id) != 0) {
+        vga_eprint("Could not add the file to its folder.\n");
+        return -1;
+    }
+    return 0;
+}
+
+/* Recursively copy a folder. *out_id receives the new folder's ID as soon as it exists. */
+static int copy_folder(uint32_t src_id, uint32_t parent_id, const char *name, uint32_t *out_id)
+{
+    struct kpfs_entry src;
+    if (find_by_id(src_id, &src) != 0 || src.type != TYPE_DIR) {
+        vga_eprint("Source folder is missing.\n");
+        return -1;
+    }
+
+    uint32_t new_id;
+    if (make_folder(parent_id, name, &new_id) != 0)
+        return -1;
+    *out_id = new_id;
+
+    /* Copy the child list first. Recursion reuses the shared kids[] buffer. */
+    uint32_t list[CHILDREN_MAX];
+    if (block_read(src.start, kids) != 0) {
+        vga_eprint("Read failed.\n");
+        return -1;
+    }
+    copy_bytes(list, kids, sizeof(list));
+
+    for (unsigned int n = 0; n < CHILDREN_MAX && list[n]; n++) {
+        struct kpfs_entry ce;
+        if (find_by_id(list[n], &ce) != 0) {
+            vga_eprint("Source folder has a broken entry.\n");
+            return -1;
+        }
+
+        if (ce.type == TYPE_FILE) {
+            if (copy_file(&ce, new_id, ce.name) != 0)
+                return -1;
+        } else if (ce.type == TYPE_DIR) {
+            uint32_t sub;
+            if (copy_folder(ce.id, new_id, ce.name, &sub) != 0)
+                return -1;
+        }
+    }
+    return 0;
+}
+
+int kpfs_copy_tree(const char *src_name, const char *dst_name)
+{
+    if (need_fs() != 0)
+        return -1;
+
+    if (!valid_name(dst_name)) {
+        vga_wprint("Invalid name: 1-15 characters, no spaces or '/'.\n");
+        return -1;
+    }
+
+    struct kpfs_entry se;
+    if (child_lookup(cur_dir, src_name, &se, 0) != 0) {
+        vga_wprint("No folder named ");
+        vga_wprint(src_name);
+        vga_putchar('\n');
+        return -1;
+    }
+    if (se.type != TYPE_DIR) {
+        vga_wprint(src_name);
+        vga_wprint(" is a file. Use cp without -r.\n");
+        return -1;
+    }
+
+    struct kpfs_entry clash;
+    if (child_lookup(cur_dir, dst_name, &clash, 0) == 0) {
+        vga_wprint("A file or folder with that name already exists here.\n");
+        return -1;
+    }
+
+    /* Defensive: a folder can't be copied into itself */
+    if (is_inside(cur_dir, se.id)) {
+        vga_eprint("A folder can't be copied into itself.\n");
+        return -1;
+    }
+
+    uint32_t new_id = NO_ID;
+    if (copy_folder(se.id, cur_dir, dst_name, &new_id) != 0) {
+        /* Roll back: remove the partial copy so nothing half-finished remains */
+        if (new_id != NO_ID) {
+            unlink_child(cur_dir, new_id);
+            delete_tree(new_id);
+        }
+        vga_eprint("Copy failed. The partial copy was removed.\n");
+        return -1;
+    }
+
+    vga_print("Copied folder ");
+    vga_print(src_name);
+    vga_print("/ to ");
+    vga_print(dst_name);
+    vga_print("/\n");
     return 0;
 }

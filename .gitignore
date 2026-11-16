@@ -5,3 +5,7 @@ disk.img
 .gitignore
 .git
 .directory
+
+*.gz
+*.tar
+*.zip

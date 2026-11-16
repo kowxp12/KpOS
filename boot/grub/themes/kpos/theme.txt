@@ -1,0 +1,62 @@
+# KpOS boot menu theme. Colors come from the PorteuX palette.
+
+desktop-image: "bootlogo.png"
+desktop-image-scale-method: "stretch"
+desktop-color: "#050A06"
+
++ label {
+    text = "KpOS"
+    font = "DejaVu Sans Mono Regular 28"
+    color = "#8CFF8C"
+    left = 6%
+    top = 8%
+    width = 60%
+    height = 40
+    align = "left"
+}
+
++ label {
+    text = "Graphics boot menu"
+    font = "DejaVu Sans Mono Regular 16"
+    color = "#9BE89B"
+    left = 6%
+    top = 8%+48
+    width = 60%
+    height = 24
+    align = "left"
+}
+
++ boot_menu {
+    left = 6%
+    top = 36%
+    width = 36%
+    height = 40%
+    item_font = "DejaVu Sans Mono Regular 16"
+    item_color = "#9BE89B"
+    selected_item_color = "#63D66B"
+    item_height = 26
+    item_spacing = 6
+}
+
++ label {
+    id = "__timeout__"
+    text = "KpOS starting in %d seconds"
+    font = "DejaVu Sans Mono Regular 16"
+    color = "#FFC66D"
+    left = 6%
+    top = 80%
+    width = 60%
+    height = 26
+    align = "left"
+}
+
++ label {
+    text = "[UP/DOWN] SELECT    [ENTER] BOOT"
+    font = "DejaVu Sans Mono Regular 16"
+    color = "#9BE89B"
+    left = 6%
+    top = 84%
+    width = 60%
+    height = 26
+    align = "left"
+}

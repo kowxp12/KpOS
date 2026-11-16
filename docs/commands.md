@@ -130,3 +130,16 @@ Opens a simple text editor for a file. If the file doesn't exist, the editor sta
 - Ctrl+Q leaves the editor. If there are unsaved changes, press it twice to discard them.
 
 Limits: files can be up to 2048 bytes. Text is added at the end, and arrow keys don't move the cursor yet.
+
+### `wc <name>`
+Counts the lines, words, and bytes in a file. A line ends at each Enter. Words are groups of text separated by spaces or line breaks.
+```
+> wc notes.txt
+3 lines, 14 words, 87 bytes
+```
+
+### `cp <name> <new name>`
+Copies a file in the current folder. The copy needs a new name, and `cp` refuses if the name is taken.
+
+### `cp -r <folder> <new name>`
+Copies a folder and everything inside it, including subfolders, into the current folder under the new name. If the copy runs out of space, the partial copy is removed and the original is left as it was.

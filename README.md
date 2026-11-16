@@ -2,7 +2,7 @@
 
 KpOS is a small hobby operating system built from scratch for x86 (32-bit). It follows the Multiboot2 standard, boots with GRUB, and is written entirely by hand, from the boot code to the shell.
 
-Current version: **v0.0.6**
+Current version: **v0.0.7**
 
 ## What it can do
 
@@ -20,6 +20,9 @@ Current version: **v0.0.6**
 - Stores files and folders on a disk with KPFS v2 (`format`, `ls`, `mkdir`, `cd`, `pwd`)
 - Writes, reads, moves, renames, and deletes files and folders (`write`, `cat`, `mv`, `rename`, `rm`)
 - Deletes whole folders with `rm -y`, and protects folders you're still inside
+- Edits text files with a full-screen editor (`edit`)
+- Counts lines, words, and bytes (`wc`), and copies files and whole folders (`cp`, `cp -r`)
+- Pages through commands with `help [page]`
 
 See [docs/commands.md](docs/commands.md) for every command and keyboard shortcut, and [docs/color.md](docs/color.md) for the color reference.
 
@@ -75,6 +78,9 @@ kernel/
   shell/              Command prompt and commands
   acpi/               ACPI tables and power-off
   mm/                 Memory map, page allocator, heap
+  shell/              Command prompt, history, core commands, editor
+  tools/              Add-on tools (wc, cp), with a registry in tools.c
+  lib/                Shared helpers (util) and memory functions
 docs/
   commands.md         Command reference
   color-dock.md       Color reference
@@ -90,8 +96,9 @@ Makefile              Build rules
 
 ## Roadmap
 
-- **v0.0.7:** A text editor for files, so `write` can take more than one line
-- **Later:** Growing the file table, USB storage, graphical mode with a mouse, and a text-to-graphics tool
+- **v0.0.8:** `find` (search by name), `tree` (show folder structure), `status` (memory, disk, and uptime together)
+- **v0.0.9:** `keymap`, `sleep`, and a command to clear history
+- **v0.1.0:** Graphics mode, starting with the framebuffer request in the Multiboot2 header
 
 ## Status and limits
 

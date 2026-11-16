@@ -8,13 +8,16 @@
 #include "irq.h"
 #include "random.h"
 #include "editor.h"
+#include "command.h"
+#include "tools.h"
+#include "util.h"
 #include "ata.h"
 #include "block.h"
 #include "kpfs.h"
 
 #define LINE_MAX     128
 #define MAX_ARGS     8
-#define KPOS_VERSION "v0.0.6"
+#define KPOS_VERSION "v0.0.7"
 #define HIST_MAX     16
 #define SCREEN_COLS  80
 #define COL_NAME     12
@@ -32,14 +35,6 @@ static int streq(const char *a, const char *b)
         b++;
     }
     return *a == *b;
-}
-
-static unsigned int str_len(const char *s)
-{
-    unsigned int n = 0;
-    while (s[n])
-        n++;
-    return n;
 }
 
 /* ---- CMOS clock helpers ---- */
@@ -281,15 +276,6 @@ static void draw_status(void)
 
 /* ---- Command table ---- */
 
-typedef void (*cmd_fn)(int argc, char **argv);
-
-struct command {
-    const char *name;
-    const char *desc;
-    cmd_fn      fn;
-    int         hidden;   /* 1 = don't list in help */
-};
-
 static void cmd_help(int argc, char **argv);
 static void cmd_clear(int argc, char **argv);
 static void cmd_echo(int argc, char **argv);
@@ -328,7 +314,7 @@ static void cmd_edit(int argc, char **argv);
 
 /* Add a new command by adding one line here */
 static const struct command commands[] = {
-    { "help",        "list all commands",                 cmd_help,              0 },
+    { "help",        "list commands: help [page]",        cmd_help,              0 },
     { "clear",       "clear the screen",                  cmd_clear,             0 },
     { "echo",        "print text: echo <text>",           cmd_echo,              0 },
     { "version",     "show the KpOS version",             cmd_version,           1 },
@@ -370,36 +356,6 @@ static const struct command commands[] = {
 
 #define NUM_COMMANDS (sizeof(commands) / sizeof(commands[0]))
 
-static void print_udec(unsigned int value)
-{
-    char buf[12];
-    int i = 0;
-
-    if (value == 0)
-        buf[i++] = '0';
-    while (value > 0) {
-        buf[i++] = '0' + (value % 10);
-        value /= 10;
-    }
-    while (i > 0)
-        vga_putchar(buf[--i]);
-}
-
-static int parse_uint(const char *s, unsigned int *out)
-{
-    unsigned int n = 0;
-
-    if (!*s)
-        return 0;
-    for (const char *p = s; *p; p++) {
-        if (*p < '0' || *p > '9')
-            return 0;
-        n = n * 10 + (*p - '0');
-    }
-    *out = n;
-    return 1;
-}
-
 static unsigned char sector_buf[512];
 
 /* Split the line in place into words. Returns the word count. */
@@ -439,6 +395,19 @@ static void reboot_now(void)
     stop_cpu();
 }
 
+static const struct command *find_command(const char *name)
+{
+    for (unsigned int i = 0; i < NUM_COMMANDS; i++)
+        if (streq(name, commands[i].name))
+            return &commands[i];
+
+    for (unsigned int i = 0; i < tool_count; i++)
+        if (streq(name, tool_table[i].name))
+            return &tool_table[i];
+
+    return 0;
+}
+
 static void run_command(char *cmd)
 {
     char *argv[MAX_ARGS];
@@ -447,11 +416,10 @@ static void run_command(char *cmd)
     if (argc == 0)
         return;
 
-    for (unsigned int i = 0; i < NUM_COMMANDS; i++) {
-        if (streq(argv[0], commands[i].name)) {
-            commands[i].fn(argc, argv);
-            return;
-        }
+    const struct command *c = find_command(argv[0]);
+    if (c) {
+        c->fn(argc, argv);
+        return;
     }
 
     vga_eprint("Unknown command: ");
@@ -496,39 +464,75 @@ static void print_row(const char *name, const char *desc,
     vga_print("|\n");
 }
 
+#define HELP_PER_PAGE 12
+
+static const struct command *cmd_at(unsigned int i)
+{
+    return i < NUM_COMMANDS ? &commands[i] : &tool_table[i - NUM_COMMANDS];
+}
+
+static unsigned int total_commands(void)
+{
+    return NUM_COMMANDS + tool_count;
+}
+
+static unsigned int visible_count(void)
+{
+    unsigned int n = 0;
+    for (unsigned int i = 0; i < total_commands(); i++)
+        if (!cmd_at(i)->hidden)
+            n++;
+    return n;
+}
+
+/* The nth visible command (counting from 0), or NULL if there isn't one */
+static const struct command *visible_nth(unsigned int n)
+{
+    for (unsigned int i = 0; i < total_commands(); i++) {
+        if (cmd_at(i)->hidden)
+            continue;
+        if (n == 0)
+            return cmd_at(i);
+        n--;
+    }
+    return 0;
+}
+
 static void cmd_help(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
+    unsigned int page = 1;
+
+    if (argc >= 2 && !parse_uint(argv[1], &page)) {
+        vga_lprint("Usage: help [page]\n");
+        return;
+    }
+
+    unsigned int pages = (visible_count() + HELP_PER_PAGE - 1) / HELP_PER_PAGE;
+    if (page < 1 || page > pages) {
+        vga_wprint("No such page. Pages go from 1 to ");
+        print_udec(pages);
+        vga_putchar('\n');
+        return;
+    }
 
     print_rule();
     print_row("Command", "Description", 15, 15);
     print_rule();
 
-    for (unsigned int i = 0; i < NUM_COMMANDS; i++) {
-        if (commands[i].hidden)
-            continue;
-        print_row(commands[i].name, commands[i].desc, 14, 7);
+    unsigned int start = (page - 1) * HELP_PER_PAGE;
+    for (unsigned int k = 0; k < HELP_PER_PAGE; k++) {
+        const struct command *c = visible_nth(start + k);
+        if (!c)
+            break;
+        print_row(c->name, c->desc, 14, 7);
     }
 
     print_rule();
-}
-
-static void cmd_clear(int argc, char **argv)
-{
-    (void)argc;
-    (void)argv;
-    vga_clear();
-}
-
-static void cmd_echo(int argc, char **argv)
-{
-    for (int i = 1; i < argc; i++) {
-        vga_print(argv[i]);
-        if (i + 1 < argc)
-            vga_putchar(' ');
-    }
-    vga_putchar('\n');
+    vga_print("Page ");
+    print_udec(page);
+    vga_print(" of ");
+    print_udec(pages);
+    vga_print(".  Type: help <page>\n");
 }
 
 static void cmd_version(int argc, char **argv)
@@ -1111,6 +1115,23 @@ static void cmd_edit(int argc, char **argv)
         return;
     }
     editor_start(argv[1], editor_done);
+}
+
+static void cmd_clear(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    vga_clear();
+}
+
+static void cmd_echo(int argc, char **argv)
+{
+    for (int i = 1; i < argc; i++) {
+        vga_print(argv[i]);
+        if (i + 1 < argc)
+            vga_putchar(' ');
+    }
+    vga_putchar('\n');
 }
 
 /* ---- Shell input and startup ---- */
