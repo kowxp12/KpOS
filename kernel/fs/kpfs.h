@@ -16,5 +16,6 @@ int kpfs_read(const char *name);
 int kpfs_remove(const char *name, int force);
 int kpfs_move(const char *name, const char *dest);
 int kpfs_rename(const char *old_name, const char *new_name);
+int kpfs_load(const char *name, char *buf, unsigned int max, unsigned int *len);
 
 #endif

@@ -30,7 +30,7 @@ vpath %.c   kernel kernel/cpu kernel/drivers kernel/shell kernel/acpi kernel/mm 
 vpath %.asm kernel/cpu
 
 OBJS = build/boot.o build/kernel.o \
-       build/vga.o build/keyboard.o build/shell.o build/acpi.o build/memmap.o build/pmm.o build/heap.o build/random.o build/ata.o \
+       build/vga.o build/keyboard.o build/shell.o build/editor.o build/acpi.o build/memmap.o build/pmm.o build/heap.o build/random.o build/ata.o \
        build/block.o build/kpfs.o build/mem.o \
        build/idt.o build/pic.o build/irq.o build/interrupts.o
 

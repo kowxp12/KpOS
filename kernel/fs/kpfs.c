@@ -864,6 +864,41 @@ int kpfs_read(const char *name)
     return 0;
 }
 
+int kpfs_load(const char *name, char *buf, unsigned int max, unsigned int *len)
+{
+    *len = 0;
+    if (need_fs() != 0)
+        return -1;
+
+    struct kpfs_entry e;
+    if (child_lookup(cur_dir, name, &e, 0) != 0)
+        return 1;                       /* not found: the editor starts a new file */
+
+    if (e.type != TYPE_FILE) {
+        vga_wprint(name);
+        vga_wprint(" is a folder. Use cd to open it.\n");
+        return -1;
+    }
+    if (e.size > max) {
+        vga_eprint("File is too large for the editor.\n");
+        return -1;
+    }
+
+    uint64_t remaining = e.size;
+    for (uint64_t k = 0; k < e.alloc && remaining > 0; k++) {
+        if (block_read(e.start + k, sec) != 0) {
+            vga_eprint("Read failed.\n");
+            return -1;
+        }
+        unsigned int n = remaining > KPFS_SECTOR ? KPFS_SECTOR : (unsigned int)remaining;
+        copy_bytes(buf + k * KPFS_SECTOR, sec, n);
+        remaining -= n;
+    }
+
+    *len = (unsigned int)e.size;
+    return 0;
+}
+
 /* Delete a file. Folder deletion comes in stage 3. */
 int kpfs_remove(const char *name, int force)
 {

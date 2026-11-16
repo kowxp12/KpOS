@@ -7,6 +7,7 @@
 #include "heap.h"
 #include "irq.h"
 #include "random.h"
+#include "editor.h"
 #include "ata.h"
 #include "block.h"
 #include "kpfs.h"
@@ -323,6 +324,7 @@ static void cmd_cd(int argc, char **argv);
 static void cmd_pwd(int argc, char **argv);
 static void cmd_mv(int argc, char **argv);
 static void cmd_rename(int argc, char **argv);
+static void cmd_edit(int argc, char **argv);
 
 /* Add a new command by adding one line here */
 static const struct command commands[] = {
@@ -363,6 +365,7 @@ static const struct command commands[] = {
     { "pwd",         "show the current folder",           cmd_pwd,               0 },
     { "mv",          "move: mv <name> <folder>",          cmd_mv,                0 },
     { "rename",      "rename: rename <old> <new>",        cmd_rename,            0 },
+    { "edit",        "edit a file: edit <name>",          cmd_edit,              0 },
 };
 
 #define NUM_COMMANDS (sizeof(commands) / sizeof(commands[0]))
@@ -1090,6 +1093,26 @@ static void cmd_rename(int argc, char **argv)
     kpfs_rename(argv[1], argv[2]);
 }
 
+/* Called when the editor closes: go back to a clean shell screen */
+static void editor_done(void)
+{
+    len = 0;
+    pos = 0;
+    drawn_len = 0;
+    hist_view = hist_count;
+    vga_clear();
+    print_prompt();
+}
+
+static void cmd_edit(int argc, char **argv)
+{
+    if (argc < 2) {
+        vga_lprint("Usage: edit <name>\n");
+        return;
+    }
+    editor_start(argv[1], editor_done);
+}
+
 /* ---- Shell input and startup ---- */
 
 void shell_init(void)
@@ -1114,7 +1137,15 @@ static void submit_line(void)
 
     history_add(line);
     vga_reset_error();
-    run_command(line);   /* this modifies line, which is why history was saved first */
+    run_command(line);
+
+    if (editor_active()) {
+        len = 0;
+        pos = 0;
+        drawn_len = 0;
+        return;
+    }
+
     draw_status();
 
     len = 0;
@@ -1148,6 +1179,11 @@ static void clear_keep_line(void)
 
 void shell_input(int key)
 {
+    if (editor_active()) {
+        editor_key(key);
+        return;
+    }
+
     switch (key) {
     case KEY_UP:
         history_prev();

@@ -119,3 +119,14 @@ Stops the CPU. The keyboard stops responding until you close the window. Use `sh
 | Ctrl+Alt+Del | Reboot |
 
 In QEMU, Ctrl+Alt+Delete may release the mouse instead. Use **View > Send Key > Ctrl+Alt+Delete** from the QEMU menu.
+
+## Files and folders
+
+### `edit <name>`
+Opens a simple text editor for a file. If the file doesn't exist, the editor starts empty, and the file is created on the first save.
+
+- Type to add text. Enter starts a new line, and Backspace deletes the last character.
+- Ctrl+S saves. The footer shows whether the save worked.
+- Ctrl+Q leaves the editor. If there are unsaved changes, press it twice to discard them.
+
+Limits: files can be up to 2048 bytes. Text is added at the end, and arrow keys don't move the cursor yet.
